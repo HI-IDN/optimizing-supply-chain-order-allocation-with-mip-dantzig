@@ -1,7 +1,11 @@
 import pandas as pd
 from gurobipy import Model, GRB
 import gurobipy as gb
-
+import numpy as np
+import plotly.io as pio
+import plotly.graph_objects as go
+from collections import Counter
+pio.renderers.default = 'browser'
 
 def input_data():
     file_path = "Supply chain logisitcs problem.xlsx"
@@ -68,6 +72,7 @@ def input_data():
     
     vmi_customers_per_plant.columns = ['Plant', 'Customers']  # Rename columns for easier reference
     vmi_customers_per_plant = vmi_customers_per_plant.sort_values(by='Plant').reset_index(drop=True)
+    vmi_customers_per_plant['Customers'] = vmi_customers_per_plant['Customers'].apply(lambda d: d if isinstance(d, list) else [])
     vmi_customers_per_plant['Plant'] = vmi_customers_per_plant['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
     vmi_customers_per_plant = vmi_customers_per_plant[vmi_customers_per_plant['Plant'] != 19]
     #print(vmi_customers_per_plant)
@@ -138,25 +143,187 @@ def input_data():
     vmi_customers_per_plant = vmi_customers_per_plant.loc[:,'Customers'].values
     weight_per_order = weight_per_order.loc[:,'Weight'].values
 
+
     return cost_per_unit,product_per_order,ID_quant_per_order,weight_per_order,ID_per_order,plant_product_capabilities,customer_per_order,vmi_customers_per_plant,daily_order_capacity_per_plant,ports_per_plant,costs_per_port
 
 cost_per_unit,product_per_order,ID_quant_per_order,weight_per_order,ID_per_order,plant_product_capabilities,customer_per_order,vmi_customers_per_plant,daily_order_capacity_per_plant,ports_per_plant,costs_per_port = input_data()
     
 
 
-# model = Model('warehouse_problem')
+model = Model('warehouse_problem')
 
-# number_of_orders = len(ID_per_order)        # index i
-# number_of_plants = len(cost_per_unit)         # index j
-# number_of_ports = len(costs_per_port)          # index k
-# number_of_days = 1
+number_of_orders = len(ID_per_order)        # index_order
+number_of_plants = len(cost_per_unit)         # index_plant
+number_of_ports = len(costs_per_port)          # index_port
+number_of_days = 1                              # index_day
 
-# plant_alloc = model.addVars(number_of_orders, number_of_plants, number_of_days, vtype=GRB.BINARY,name="Plant Allocation")        # number of plant j producing order i
-# port_alloc = model.addVars(number_of_orders, number_of_ports, number_of_days, vtype=GRB.BINARY,name="Port Allocation")        # number of port k shipping order i
-    
-# def objective_function(cost_per_unit,costs_per_port,ID_quant_per_order,plant_alloc,port_alloc):
-#     gb.quicksum(cost_per_unit[])
+plant_alloc = model.addVars(number_of_orders, number_of_plants, number_of_days, vtype=GRB.BINARY,name="Plant Allocation")        # number of plant j producing order i
+port_alloc = model.addVars(number_of_orders, number_of_ports, number_of_days, vtype=GRB.BINARY,name="Port Allocation")        # number of port k shipping order i
+days_needed = model.addVar(vtype = GRB.INTEGER, name='Days that are needed', lb = 0)
     
     
+cost_of_production = gb.quicksum(cost_per_unit[index_plant]*ID_quant_per_order[index_order,1]*plant_alloc[index_order,index_plant,index_day]
+                for index_plant in range(number_of_plants) for index_order in range(number_of_orders) for index_day in range(number_of_days))
     
+cost_of_shipping = gb.quicksum((costs_per_port[index_port,0]+costs_per_port[index_port,1]*weight_per_order[index_order])*port_alloc[index_order,index_port,index_day]
+                                   for index_port in range(number_of_ports) for index_order in range(number_of_orders) for index_day in range(number_of_days))
     
+cost_total = cost_of_production + cost_of_shipping + 1e10*days_needed
+    
+
+model.setObjective(cost_total, GRB.MINIMIZE)
+
+
+
+# for index_order in range(number_of_orders):
+#     for index_plant in range(number_of_plants):
+#         if customer_per_order[index_order] in vmi_customers_per_plant[index_plant]:
+#             for index_plant_2 in range(number_of_plants):
+#                 if index_plant_2 != index_plant and customer_per_order[index_order] not in vmi_customers_per_plant[index_plant_2]:
+#                     model.addConstr(gb.quicksum(plant_alloc[index_order,index_plant_2,index_day] for index_day in range(number_of_days)) == 0, name=f'VMI_order_{index_order}_plant_{index_plant}')
+            
+for index_order in range(number_of_orders):
+    for index_plant in range(number_of_plants):
+        if product_per_order[index_order] not in plant_product_capabilities[index_plant]:
+            for index_day in range(number_of_days):
+                model.addConstr(plant_alloc[index_order,index_plant,index_day] == 0, name=f'plant_{index_plant}_incapable_producing_order_{index_order}_')
+
+for index_order in range(number_of_orders):
+    tot = 0
+    for index_day in range(number_of_days):
+        tot += gb.quicksum(plant_alloc[index_order, index_plant, index_day] for index_plant in range(number_of_plants))
+    model.addConstr(tot==1, name=f'order_{index_order}_to_ONE_plant')
+
+for index_order in range(number_of_orders):
+    tot = 0
+    for index_day in range(number_of_days):
+        tot += gb.quicksum(port_alloc[index_order, index_port, index_day] for index_port in range(number_of_ports))
+    model.addConstr(tot==1, name=f'order_{index_order}_to_ONE_port')
+
+for index_plants in range(number_of_plants):
+    for index_day in range(number_of_days):
+        model.addConstr(gb.quicksum(plant_alloc[index_orders, index_plants, index_day] for index_orders in range(number_of_orders)) <= days_needed*daily_order_capacity_per_plant[index_plants], name=f'plant_{index_plants}_order_limit')
+
+for index_order in range(number_of_orders):
+    for index_plant in range(number_of_plants):
+        for index_port in range(number_of_ports):
+            if index_port not in ports_per_plant[index_plant]:
+                tot = 0
+                for index_day in range(number_of_days):
+                    tot += plant_alloc[index_order, index_plant, index_day] + port_alloc[index_order, index_port, index_day]
+                model.addConstr(tot <= 1, name=f'order_{index_order}_plant_{index_plant}_not_conn_to_port_{index_port}')
+
+
+ # Solve the first model
+model.optimize()
+# print(model.getVarByName('\n\n\n\n\nDays that are needed'))
+# model.computeIIS()
+# model.write('model.ilp')  
+
+
+# print("Infeasible constraints and bounds:")
+# for c in model.getConstrs():
+#     if c.IISConstr:
+#         print(f"Constraint {c.constrName} is in the IIS")
+# for v in model.getVars():
+#     if v.IISLB:
+#         print(f"Variable {v.varName} has an infeasible lower bound")
+#     if v.IISUB:
+#         print(f"Variable {v.varName} has an infeasible upper bound")
+
+
+
+#print(model.objVal)
+    
+if model.status == GRB.OPTIMAL:
+    allocation = []  # List to store the allocation of orders
+
+    # Loop through each order
+    for i in range(number_of_orders):
+        # Check each plant for the current order
+        assigned_plant = None
+        for j in range(number_of_plants):
+            if plant_alloc[i, j,0].x > 0.5:  # If order i is assigned to plant j
+                assigned_plant = j
+                break
+        
+        # Check each port for the current order
+        assigned_port = None
+        for k in range(number_of_ports):
+            if port_alloc[i, k,0].x > 0.5:  # If order i is shipped through port k
+                assigned_port = k
+                break
+        
+        # Append the allocation as a tuple (order, plant, port)
+        if assigned_plant is not None and assigned_port is not None:
+            allocation.append((i, assigned_plant, assigned_port))
+
+    # Print the allocation results
+    #print("Order allocations (order, plant, port):", allocation)
+else:
+    pass
+    #print("No optimal solution found. Status code:", model.status) 
+    
+
+
+# Sample data: replace with actual allocation results from the optimization
+# Each entry is (order_id, plant_id, port_id)
+
+# Define nodes
+order_node = "All Orders"
+plants = sorted(set(plant_id for _, plant_id, _ in allocation))
+ports = sorted(set(port_id for _, _, port_id in allocation))
+
+# Create a list of all node labels
+node_labels = [order_node] + [f"Plant {j}" for j in plants] + [f"Port {k}" for k in ports]
+
+# Calculate order counts for edges between levels
+# First level (All Orders -> Plants)
+orders_to_plants = Counter(plant_id for _, plant_id, _ in allocation)
+
+# Second level (Plants -> Ports)
+plants_to_ports = Counter((plant_id, port_id) for _, plant_id, port_id in allocation)
+
+# Map node labels to indices for Sankey
+node_indices = {label: i for i, label in enumerate(node_labels)}
+
+# Define the Sankey diagram sources, targets, and values based on the calculations above
+sources = []
+targets = []
+values = []
+
+# Add edges from "All Orders" to each plant
+for plant, count in orders_to_plants.items():
+    sources.append(node_indices[order_node])
+    targets.append(node_indices[f"Plant {plant}"])
+    values.append(count)
+
+# Add edges from each plant to each port
+for (plant, port), count in plants_to_ports.items():
+    sources.append(node_indices[f"Plant {plant}"])
+    targets.append(node_indices[f"Port {port}"])
+    values.append(count)
+
+# Create the Sankey diagram using Plotly
+fig = go.Figure(go.Sankey(
+    node=dict(
+        pad=15,
+        thickness=20,
+        line=dict(color="black", width=0.5),
+        label=node_labels,
+        color="blue"
+    ),
+    link=dict(
+        source=sources,    # indices of source nodes
+        target=targets,    # indices of target nodes
+        value=values,      # the flow values for each link
+        color="rgba(100, 150, 250, 0.4)"
+    )
+))
+
+# Set the layout and display the figure
+fig.update_layout(title_text="Order Allocation Flow from Orders to Plants to Ports", font_size=12)
+fig.show()
+
+
+
