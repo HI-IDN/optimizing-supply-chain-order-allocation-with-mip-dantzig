@@ -94,7 +94,9 @@ def input_data():
     
     ports_per_plant = ports_per_plant.sort_values(by='Plant').reset_index(drop=True)
     ports_per_plant['Plant'] = ports_per_plant['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
+    ports_per_plant['Port'] = ports_per_plant['Port'].apply(lambda x: list(map(int,x)))
     ports_per_plant = ports_per_plant[ports_per_plant['Plant'] != 19]
+    
     #print(ports_per_plant)
     
     ####costs_per_port################################################################################################
