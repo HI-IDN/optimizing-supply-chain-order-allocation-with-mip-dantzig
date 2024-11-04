@@ -17,6 +17,7 @@ cpu = pd.read_excel(file_path, sheet_name='WhCosts', usecols=['WH', 'Cost/unit']
 cpu.columns = ['Plant', 'UnitCost']  # Rename columns for easier reference
 cpu = cpu.sort_values(by='Plant').reset_index(drop=True)
 cpu['Plant'] = cpu['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
+cpu = cpu[cpu['Plant'] != 19]
 print(cpu)
 
 
@@ -43,6 +44,7 @@ ppid.reset_index(drop=True, inplace=True)
 ppid.columns = ['Plant', 'ProductID']  # Rename columns for easier reference
 ppid = ppid.sort_values(by='Plant').reset_index(drop=True)
 ppid['Plant'] = ppid['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
+#ppid = ppid[ppid['Plant'] != 19]
 print(ppid)
 
 
@@ -67,6 +69,7 @@ vmi = all_plants.merge(vmi, on='Plant Code', how='left')
 vmi.columns = ['Plant', 'Customers']  # Rename columns for easier reference
 vmi = vmi.sort_values(by='Plant').reset_index(drop=True)
 vmi['Plant'] = vmi['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
+vmi = vmi[vmi['Plant'] != 19]
 print(vmi)
 
 
@@ -75,6 +78,7 @@ dc = pd.read_excel(file_path, sheet_name='WhCapacities', usecols=['Plant ID', 'D
 dc.columns = ['Plant', 'Daily Capacity']  # Rename columns for easier reference
 dc = dc.sort_values(by='Plant').reset_index(drop=True)
 dc['Plant'] = dc['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
+dc = dc[dc['Plant'] != 19]
 print(dc)
 
 
@@ -90,6 +94,7 @@ cp['Port'] = cp['Port'].apply(lambda ports: [port_mapping[port] for port in port
 
 cp = cp.sort_values(by='Plant').reset_index(drop=True)
 cp['Plant'] = cp['Plant'].replace({'PLANT': ''}, regex=True).astype(int)
+cp = cp[cp['Plant'] != 19]
 print(cp)
 
 ####cpw################################################################################################
@@ -102,6 +107,17 @@ cpw['Variable cost'] = cpw['Variable cost'].replace({'\$': '', ',': '.'}, regex=
 cpw = cpw.groupby('Port').agg({'Fixed cost': 'mean', 'Variable cost': 'mean'}).reset_index()
 cpw = cpw.sort_values(by='Port').reset_index(drop=True)
 cpw['Port'] = cpw['Port'].replace({'PORT': ''}, regex=True).astype(int)
+
+# mean value for 'Fixed cost' and 'Variable cost'
+mean_fixed_cost = cpw['Fixed cost'].mean()
+mean_variable_cost = cpw['Variable cost'].mean()
+
+# new row for PORT01
+new_row = {'Port': 1, 'Fixed cost': mean_fixed_cost, 'Variable cost': mean_variable_cost}
+
+# insert new row in DataFrame
+cpw = pd.concat([pd.DataFrame([new_row]), cpw], ignore_index=True)
+
 print(cpw)
 
 
