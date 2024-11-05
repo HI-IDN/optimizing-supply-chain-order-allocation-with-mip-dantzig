@@ -1,3 +1,4 @@
+import csv
 import pandas as pd
 from gurobipy import Model, GRB
 import gurobipy as gb
@@ -5,6 +6,8 @@ import numpy as np
 import plotly.io as pio
 import plotly.graph_objects as go
 from collections import Counter
+
+pio.renderers.default = 'browser'
 
 def input_data():
     file_path = "data/supply_chain_data.xlsx"
@@ -261,11 +264,8 @@ if model.status == GRB.INFEASIBLE:
 
     
 if model.status == GRB.OPTIMAL:
-    print('Writing output...')
-    model.write('model_success.sol')
-    model.write('model_success.rlp')
     
-    print('Creating Sankey diagram...')
+    print('Mapping allocations...')
     allocation = []  # List to store the allocation of orders
 
     # Loop through each order
@@ -295,15 +295,37 @@ if model.status == GRB.OPTIMAL:
 else:
     pass
     #print("No optimal solution found. Status code:", model.status) 
-    
 
+
+# Define the CSV file path
+output_file = "order_allocation.csv"
+
+# Write allocations to the CSV file
+with open(output_file, mode="w", newline="") as file:
+    writer = csv.writer(file)
+    
+    # Write headers
+    writer.writerow(["Order", "Plant", "Port", "VMI_Violation"])
+
+    # Write each allocation entry along with VMI violation status
+    for order, plant, port in allocation:
+        # Determine if the order violates VMI constraints
+        is_violating = any(vmi_slack[order, plant].x > 0.5 for plant in range(number_of_plants))
+        violation_status = "Violating" if is_violating else "Non-Violating"
+        
+        # Write a row for each allocation
+        writer.writerow([order, plant, port, violation_status])
+
+print(f"Order allocation data has been saved to '{output_file}'")
+
+print('Generating Sankey diagram...')
 # Define nodes
 order_node = "All Orders"
 plants = sorted(set(plant_id for _, plant_id, _ in allocation))
 ports = sorted(set(port_id for _, _, port_id in allocation))
 
 # Create a list of all node labels
-node_labels = [order_node] + [f"Plant {j}" for j in plants] + [f"Port {k}" for k in ports]
+node_labels = [order_node] + [f"Plant {j+1}" for j in plants] + [f"Port {k+1}" for k in ports]
 
 # Calculate order counts for edges between levels
 # First level (All Orders -> Plants)
@@ -323,13 +345,13 @@ values = []
 # Add edges from "All Orders" to each plant
 for plant, count in orders_to_plants.items():
     sources.append(node_indices[order_node])
-    targets.append(node_indices[f"Plant {plant}"])
+    targets.append(node_indices[f"Plant {plant + 1}"])
     values.append(count)
 
 # Add edges from each plant to each port
 for (plant, port), count in plants_to_ports.items():
-    sources.append(node_indices[f"Plant {plant}"])
-    targets.append(node_indices[f"Port {port}"])
+    sources.append(node_indices[f"Plant {plant + 1}"])
+    targets.append(node_indices[f"Port {port + 1}"])
     values.append(count)
 
 # Create the Sankey diagram using Plotly
@@ -356,3 +378,137 @@ fig.show()
 
 print('Determining VMI violations...')
 print(f'Number of orders with VMI violations {gb.quicksum(vmi_slack[index_order, index_plant].x for index_order in range(number_of_orders) for index_plant in range(number_of_plants))}')
+
+print(f'The total cost to ship all orders (with VMI violations) is: {(cost_of_production.getValue() + cost_of_shipping.getValue())/1e6:.4g} M$')
+
+
+
+
+from collections import defaultdict
+
+print('Creating enhanced Sankey diagram with VMI violation layer...')
+
+# Step 1: Define nodes and layers
+order_node = "All Orders"
+violating_orders_node = "Violating Orders"
+non_violating_orders_node = "Non-Violating Orders"
+
+# Identify plants and ports involved in allocations
+plants = sorted(set(plant_id for _, plant_id, _ in allocation))
+ports = sorted(set(port_id for _, _, port_id in allocation))
+
+# Create a list of all node labels
+node_labels = [order_node, violating_orders_node, non_violating_orders_node] + \
+              [f"Plant {j+1}" for j in plants] + \
+              [f"Port {k+1}" for k in ports]
+
+# Map node labels to indices for easier referencing in Sankey source/target lists
+node_indices = {label: i for i, label in enumerate(node_labels)}
+
+# Step 2: Define sources, targets, and values for the diagram links
+sources = []
+targets = []
+values = []
+colors = []  # List to store colors for each edge (link)
+
+# Track order allocations by type (violating or non-violating) for visualization
+orders_to_plants = defaultdict(int)      # Store number of orders from each VMI group to each plant
+plants_to_ports = defaultdict(int)       # Store number of orders from each plant to each port
+
+# Step 3: Populate VMI-based allocations
+for order, plant, port in allocation:
+    # Determine if the order is violating based on the VMI slack variable
+    is_violating = any(vmi_slack[order, plant].x > 0.5 for plant in range(number_of_plants))
+
+    # Connect "All Orders" to either "Violating Orders" or "Non-Violating Orders" based on the violation status
+    if is_violating:
+        sources.append(node_indices[order_node])
+        targets.append(node_indices[violating_orders_node])
+        values.append(1)
+        colors.append("rgba(255, 0, 0, 0.4)")  # Red color for violating orders
+        orders_to_plants[(violating_orders_node, f"Plant {plant + 1}")] += 1
+    else:
+        sources.append(node_indices[order_node])
+        targets.append(node_indices[non_violating_orders_node])
+        values.append(1)
+        colors.append("rgba(0, 0, 255, 0.4)")  # Blue color for non-violating orders
+        orders_to_plants[(non_violating_orders_node, f"Plant {plant + 1}")] += 1
+
+    # Record allocations from plants to ports
+    plants_to_ports[(f"Plant {plant + 1}", f"Port {port + 1}")] += 1
+
+# Step 4: Add links from VMI nodes to Plants based on allocations
+for (vmi_node, plant), count in orders_to_plants.items():
+    sources.append(node_indices[vmi_node])
+    targets.append(node_indices[plant])
+    values.append(count)
+    colors.append("rgba(255, 0, 0, 0.4)" if vmi_node == violating_orders_node else "rgba(0, 0, 255, 0.4)")
+
+# Step 5: Add links from Plants to Ports based on allocations
+for (plant, port), count in plants_to_ports.items():
+    sources.append(node_indices[plant])
+    targets.append(node_indices[port])
+    values.append(count)
+    colors.append("rgba(255, 0, 0, 0.4)" if "Violating" in plant else "rgba(0, 0, 255, 0.4)")
+
+# Step 6: Create the Sankey diagram using Plotly
+fig = go.Figure(go.Sankey(
+    node=dict(
+        pad=15,
+        thickness=20,
+        line=dict(color="black", width=0.5),
+        label=node_labels,
+        color="blue"
+    ),
+    link=dict(
+        source=sources,     # indices of source nodes
+        target=targets,     # indices of target nodes
+        value=values,       # the flow values for each link
+        color=colors        # colors based on violation status
+    )
+))
+
+# Set the layout and display the figure
+fig.update_layout(title_text="Order Allocation Flow with VMI Violation Status", font_size=12)
+fig.show()
+
+
+
+
+print('Generating port plant connection Sankey graph...')
+plants = [f'Plant {index_plant + 1}' for index_plant in range(len(ports_per_plant))]
+ports = [f'Port {index_port + 1}' for index_port in range(len(costs_per_port))]
+node_labels = plants + ports
+source = []
+target = []
+value = []
+for index_plant, plant_key in enumerate(plants):
+    for index_port, port_key in enumerate(ports):
+        if index_port in ports_per_plant[index_plant]:
+            source.append(index_plant)
+            target.append(len(plants) + index_port)
+            value.append(1)
+        
+
+
+# Create the Sankey diagram
+fig = go.Figure(data=[go.Sankey(
+    node=dict(
+        pad=15,
+        thickness=20,
+        line=dict(color="black", width=0.5),
+        label=node_labels,
+        color="blue"  # Uniform color for simplicity
+    ),
+    link=dict(
+        source=source,
+        target=target,
+        value=value,
+        color="rgba(100, 150, 250, 0.4)"  # Uniform color for simplicity
+    )
+)])
+
+
+# Update layout
+fig.update_layout(title_text="Sankey Diagram of Ports per Plant", font_size=20)
+fig.show()
